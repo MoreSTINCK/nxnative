@@ -1,0 +1,78 @@
+name: env-check
+
+# 只验证云 Mac 的工具链是否齐备：不下载游戏、不打包、不产出 IPA。
+#
+# 上游 docs/development.md 指定 Xcode 27.1 与 GitHub 的 `xcode-27` 镜像，这里照做。
+# 最后一步 dm/ios/tools/compile_check.py 是上游自带的“无游戏文件 iOS 编译自检”，
+# 它只把 dm/host + dm/ios/Sources 编译到 /dev/null，用来证明 SDK、头文件路径和 -D 开关都对得上。
+# GAME 只是让它从 dm/games/<id>/game.tsv 取编译参数，不读取任何游戏数据。
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - '.github/workflows/env-check.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: env-check
+  cancel-in-progress: true
+
+jobs:
+  mac-toolchain:
+    runs-on: xcode-27
+    timeout-minutes: 60
+    env:
+      GAME: 010015100B514000
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: 系统与 Xcode
+        run: |
+          sw_vers
+          uname -m
+          xcodebuild -version
+          xcode-select -p
+          echo "cores: $(sysctl -n hw.ncpu)"
+          df -h /
+
+      - name: Metal 编译器
+        run: |
+          if xcrun -f metal >/dev/null 2>&1; then
+            echo "metal 已随 Xcode 提供"
+          else
+            echo "缺少 metal，下载 MetalToolchain 组件"
+            xcodebuild -downloadComponent MetalToolchain
+          fi
+          xcrun metal --version
+
+      - name: Homebrew 工具
+        run: |
+          brew install xcodegen zstd glslang
+          xcodegen --version
+          zstd --version
+          glslangValidator --version | head -2
+
+      - name: Python 依赖
+        run: |
+          python3 -m pip install --user lz4 capstone fonttools 2>/dev/null \
+            || python3 -m pip install --break-system-packages lz4 capstone fonttools
+          python3 -c "import lz4.block, capstone, fontTools; print('python deps ok')"
+
+      - name: .NET
+        run: dotnet --info | head -14
+
+      - name: 仓库自带二进制
+        run: |
+          ls -l dm/gfx/tools/dmsh_xlate_bin/ 2>/dev/null | head -5
+          ls -l dm/gfx/tools/spirv_cross_bin/ 2>/dev/null | head -5
+
+      - name: 游戏 profile 表
+        run: python3 dm/games/game.py list | head -5
+
+      - name: 无游戏 iOS 编译自检
+        run: python3 dm/ios/tools/compile_check.py
